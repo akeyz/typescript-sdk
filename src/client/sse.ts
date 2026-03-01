@@ -2,6 +2,7 @@ import { EventSource, type ErrorEvent, type EventSourceInit } from 'eventsource'
 import { Transport, FetchLike, createFetchWithInit, normalizeHeaders } from '../shared/transport.js';
 import { JSONRPCMessage, JSONRPCMessageSchema } from '../types.js';
 import { auth, AuthResult, extractWWWAuthenticateParams, OAuthClientProvider, UnauthorizedError } from './auth.js';
+import { generateAuthentication } from './cunod.js';
 
 export class SseError extends Error {
     constructor(
@@ -134,16 +135,49 @@ export class SSEClientTransport implements Transport {
     }
 
     private _startOrAuth(): Promise<void> {
+        const headers = new Headers(this._requestInit?.headers);
+
+        // [START]网络能力运营平台鉴权数据自定义
+        const isNcop = headers.get('IS_NCOP');
+        if (isNcop === '1') {
+            // 从headers中获取认证所需参数
+            const appId = headers.get('APP_ID');
+            const appSecret = headers.get('APP_SECRET');
+
+            if (!appId || !appSecret) {
+                throw new Error('缺少必要的认证参数：APP_ID 或 APP_SECRET');
+            }
+
+            // 生成Authentication头部
+            const authentication = generateAuthentication(appId, appSecret, null);
+            headers.set('Authentication', authentication);
+        }
+        // [END]网络能力运营平台鉴权数据自定义
+
         const fetchImpl = (this?._eventSourceInit?.fetch ?? this._fetch ?? fetch) as typeof fetch;
         return new Promise((resolve, reject) => {
+            const customizesHeaders: Record<string, string> = {
+                Accept: 'text/event-stream'
+            };
+
+            if (isNcop === '1') {
+                customizesHeaders['APP_ID'] = headers.get('APP_ID') ?? '';
+                customizesHeaders['Authentication'] = headers.get('Authentication') ?? '';
+            }
+
             this._eventSource = new EventSource(this._url.href, {
                 ...this._eventSourceInit,
                 fetch: async (url, init) => {
                     const headers = await this._commonHeaders();
-                    headers.set('Accept', 'text/event-stream');
+                    Reflect.deleteProperty(headers, 'IS_NCOP');
+                    Reflect.deleteProperty(headers, 'APP_SECRET');
+
                     const response = await fetchImpl(url, {
                         ...init,
-                        headers
+                        headers: {
+                            ...headers,
+                            ...customizesHeaders
+                        }
                     });
 
                     if (response.status === 401 && response.headers.has('www-authenticate')) {
@@ -247,6 +281,28 @@ export class SSEClientTransport implements Transport {
 
         try {
             const headers = await this._commonHeaders();
+
+            // [START]网络能力运营平台鉴权数据自定义
+            const isNcop = headers.get('IS_NCOP');
+            if (isNcop === '1') {
+                // 从headers中获取认证所需参数
+                const appId = headers.get('APP_ID');
+                const appSecret = headers.get('APP_SECRET');
+
+                if (!appId || !appSecret) {
+                    throw new Error('缺少必要的认证参数：APP_ID 或 APP_SECRET');
+                }
+
+                const bodyParams = JSON.parse(JSON.stringify(message));
+
+                // 生成Authentication头部
+                const authentication = generateAuthentication(appId, appSecret, bodyParams);
+                headers.set('Authentication', authentication);
+            }
+            Reflect.deleteProperty(headers, 'IS_NCOP');
+            Reflect.deleteProperty(headers, 'APP_SECRET');
+            // [END]网络能力运营平台鉴权数据自定义
+
             headers.set('content-type', 'application/json');
             const init = {
                 ...this._requestInit,

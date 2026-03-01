@@ -129,7 +129,7 @@ out
 .pnp.*
 
 .DS_Store
-dist/
+# dist/
 
 # IDE
 .idea/
